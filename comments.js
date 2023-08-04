@@ -1,67 +1,83 @@
-// Create  web server
+// Create web server
 
-// 1. Import module
-var express = require('express');
-var bodyParser = require('body-parser');
-var cookieParser = require('cookie-parser');
-var shortid = require('shortid');
-var db = require('./db');
+const express = require('express');
+const bodyParser = require('body-parser');
+const { randomBytes } = require('crypto');
+const cors = require('cors');
+const axios = require('axios');
 
-// 2. Create app
-var app = express();
+// Create express app
+const app = express();
 
-// 3. Set up app
-app.set('view engine', 'pug');
-app.set('views', './views');
-
-// 4. Use middleware
+// Use body parser to parse request body
 app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(cookieParser());
 
-// 5. Create router
-app.get('/', function(req, res){
-	res.render('index', {
-		name: 'AAA'
-	});
+// Use cors
+app.use(cors());
+
+// Create comments object
+const commentsByPostId = {};
+
+// Create route to get comments for a post
+app.get('/posts/:id/comments', (req, res) => {
+  // Get comments for post
+  const comments = commentsByPostId[req.params.id] || [];
+
+  // Return comments
+  res.send(comments);
 });
 
-app.get('/users', function(req, res){
-	res.render('users/index', {
-		users: db.get('users').value()
-	});
+// Create route to create a comment for a post
+app.post('/posts/:id/comments', async (req, res) => {
+  // Generate random id
+  const id = randomBytes(4).toString('hex');
+
+  // Get content from request body
+  const { content } = req.body;
+
+  // Get comments for post
+  const comments = commentsByPostId[req.params.id] || [];
+
+  // Add comment to comments
+  comments.push({ id, content, status: 'pending' });
+
+  // Update comments for post
+  commentsByPostId[req.params.id] = comments;
+
+  // Emit event to event bus
+  await axios.post('http://event-bus-srv:4005/events', {
+    type: 'CommentCreated',
+    data: { id, content, postId: req.params.id, status: 'pending' },
+  });
+
+  // Return comments
+  res.status(201).send(comments);
 });
 
-app.get('/users/search', function(req, res){
-	var q = req.query.q;
-	var matchedUsers = db.get('users').value().filter(function(user){
-		return user.name.toLowerCase().indexOf(q.toLowerCase()) !== -1;
-	});
-	res.render('users/index', {
-		users: matchedUsers,
-		q: q
-	});
-});
+// Create route to receive events from event bus
+app.post('/events', async (req, res) => {
+  // Get event from request body
+  const { type, data } = req.body;
 
-app.get('/users/create', function(req, res){
-	res.render('users/create');
-});
+  // Check event type
+  if (type === 'CommentModerated') {
+    // Get comments for post
+    const comments = commentsByPostId[data.postId];
 
-app.get('/users/:id', function(req, res){
-	var id = req.params.id;
-	var user = db.get('users').find({ id: id }).value();
-	res.render('users/view', {
-		user: user
-	});
-});
+    // Get comment
+    const comment = comments.find((comment) => comment.id === data.id);
 
-app.post('/users/create', function(req, res){
-	req.body.id = shortid.generate();
-	db.get('users').push(req.body).write();
-	res.redirect('/users');
-});
+    // Update comment
+    comment.status = data.status;
 
-// 6. Listen port
-app.listen(3000, function(){
-	console.log('Server listening on port ' + 3000);
-});
+    // Emit event to event bus
+    await axios.post('http://event-bus-srv:4005/events', {
+      type: 'CommentUpdated',
+      data: { ...comment, postId: data.postId },
+    });
+    }   
+
+    // Send response
+    res.send({});
+}
+);
